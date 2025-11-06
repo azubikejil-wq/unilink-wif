@@ -1,5 +1,5 @@
 // Create this file: src/pages/PaymentCallback.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ const PaymentCallback = () => {
   const [status, setStatus] = useState<'verifying' | 'success' | 'failed'>('verifying');
   const [voucherData, setVoucherData] = useState<any>(null);
   const [copiedCode, setCopiedCode] = useState(false);
+  const hasVerified = useRef(false); // Prevent duplicate verification
 
   const generateVoucherCode = () => {
     // Generate exactly 8 character code: 3 letters + 5 numbers
@@ -105,50 +106,79 @@ const PaymentCallback = () => {
           // Payment verified successfully
           const paymentData = result.data;
           
-          // Generate voucher code (same as password for simplicity)
-          const voucherCode = generateVoucherCode();
-          const deviceFingerprint = getDeviceFingerprint();
+          // Get device ID
+          const deviceId = await getDeviceId();
+          console.log('💾 Saving voucher with device ID:', deviceId);
 
-          // Extract customer info from payment metadata or customer object
-          const customerName = paymentData.customer?.name || paymentData.meta?.name || 'Customer';
-          const customerPhone = paymentData.customer?.phone_number || paymentData.meta?.phone || '';
-          const customerEmail = paymentData.customer?.email || null;
-          const days = parseInt(paymentData.meta?.days || '1');
-          const amount = parseFloat(paymentData.amount);
+          // Check if voucher already exists for this transaction
+          const { data: existingVoucher, error: checkError } = await supabase
+            .from('transactions')
+            .select('*')
+            .eq('transaction_ref', transactionId)
+            .maybeSingle();
 
-          // Save to Supabase
-          const createdAt = new Date().toISOString();
-          const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+          if (checkError && checkError.code !== 'PGRST116') {
+            // PGRST116 is "no rows returned" which is fine
+            console.error('❌ Error checking existing voucher:', checkError);
+            throw new Error('Failed to check existing voucher');
+          }
 
-          const { error } = await supabase.from('transactions').insert({
-            voucher_code: voucherCode,
-            customer_name: customerName,
-            phone: customerPhone,
-            email: customerEmail,
-            duration_days: days,
-            amount: amount,
-            transaction_ref: transactionId,
-            security_pin: voucherCode, // Use same code as password
-            device_fingerprint: deviceFingerprint,
-            created_at: createdAt,
-            expires_at: expiresAt,
-            status: 'active',
-            is_used: false,
-            usage_attempts: 0,
-          });
+          let savedVoucher;
 
-          if (error) {
-            console.error('Supabase error:', error);
-            throw new Error('Failed to save voucher');
+          if (existingVoucher) {
+            console.log('✅ Voucher already exists for this transaction:', existingVoucher);
+            savedVoucher = existingVoucher;
+          } else {
+            // Generate voucher code (same as password for simplicity)
+            const voucherCode = generateVoucherCode();
+            const deviceFingerprint = getDeviceFingerprint();
+
+            // Extract customer info from payment metadata or customer object
+            const customerName = paymentData.customer?.name || paymentData.meta?.name || 'Customer';
+            const customerPhone = paymentData.customer?.phone_number || paymentData.meta?.phone || '';
+            const customerEmail = paymentData.customer?.email || null;
+            const days = parseInt(paymentData.meta?.days || '1');
+            const amount = parseFloat(paymentData.amount);
+
+            // Save to Supabase
+            const createdAt = new Date().toISOString();
+            const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+            // Insert new voucher
+            const { data, error } = await supabase.from('transactions').insert({
+              voucher_code: voucherCode,
+              customer_name: customerName,
+              phone: customerPhone,
+              email: customerEmail,
+              duration_days: days,
+              amount: amount,
+              transaction_ref: transactionId,
+              security_pin: voucherCode, // Use same code as password
+              device_fingerprint: deviceFingerprint,
+              purchase_device_id: deviceId,
+              created_at: createdAt,
+              expires_at: expiresAt,
+              status: 'active',
+              is_used: false,
+              usage_attempts: 0,
+            }).select().single();
+
+            if (error) {
+              console.error('❌ Supabase error:', error);
+              throw new Error('Failed to save voucher');
+            }
+
+            console.log('✅ Voucher saved successfully:', data);
+            savedVoucher = data;
           }
 
           // Set success state with voucher data
           setVoucherData({
-            voucherCode,
-            days,
-            amount,
-            customerName,
-            customerPhone,
+            voucherCode: savedVoucher.voucher_code,
+            days: savedVoucher.duration_days,
+            amount: savedVoucher.amount,
+            customerName: savedVoucher.customer_name,
+            customerPhone: savedVoucher.phone,
           });
           setStatus('success');
 
@@ -291,6 +321,10 @@ const PaymentCallback = () => {
 
         <Button onClick={() => navigate('/')} size="lg" variant="outline" className="w-full h-12">
           Back to Home
+        </Button>
+        
+        <Button onClick={() => navigate('/voucher-history')} size="lg" className="w-full h-12">
+          View My Vouchers
         </Button>
       </div>
     </div>

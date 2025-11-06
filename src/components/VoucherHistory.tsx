@@ -39,6 +39,7 @@ const VoucherHistory = () => {
       // Get device ID
       const id = await getDeviceId();
       setDeviceId(id);
+      console.log('🔍 Loading vouchers for device:', id);
 
       // Fetch all vouchers for this device
       const { data, error } = await supabase
@@ -47,22 +48,34 @@ const VoucherHistory = () => {
         .eq('purchase_device_id', id)
         .order('created_at', { ascending: false });
 
+      console.log('📊 Query result:', { data, error });
+
       if (error) {
-        console.error('Error fetching vouchers:', error);
+        console.error('❌ Error fetching vouchers:', error);
         toast({
           title: "Error Loading History",
-          description: "Could not load your voucher history",
+          description: "Could not load your voucher history. Check console for details.",
           variant: "destructive",
         });
         return;
       }
 
+      console.log(`✅ Found ${data?.length || 0} vouchers`);
       setVouchers(data || []);
+
+      // Show debug info if no vouchers found
+      if (!data || data.length === 0) {
+        console.log('ℹ️ No vouchers found for this device ID');
+        console.log('💡 Check Supabase Table Editor to verify:');
+        console.log('   1. Vouchers exist in transactions table');
+        console.log('   2. purchase_device_id column has values');
+        console.log('   3. purchase_device_id matches:', id);
+      }
     } catch (error) {
-      console.error('Load error:', error);
+      console.error('💥 Load error:', error);
       toast({
         title: "Error",
-        description: "Something went wrong",
+        description: "Something went wrong. Check console for details.",
         variant: "destructive",
       });
     } finally {
@@ -158,8 +171,11 @@ const VoucherHistory = () => {
         <Button 
           variant="ghost" 
           size="icon"
-          onClick={() => navigate('/')}
-          className="h-10 w-10 rounded-full"
+          onClick={() => {
+            console.log('Back button clicked, navigating back');
+            navigate(-1);
+          }}
+          className="h-10 w-10 rounded-full hover:bg-secondary cursor-pointer"
         >
           <ArrowLeft className="h-5 w-5" />
         </Button>

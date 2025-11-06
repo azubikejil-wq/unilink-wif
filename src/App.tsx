@@ -5,8 +5,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import PaymentCallback from "./pages/PaymentCallback";
+import VoucherHistory from "./components/VoucherHistory";
 import NotFound from "./pages/NotFound";
 import InstallPrompt from "./components/InstallPrompt";
+
 
 const queryClient = new QueryClient();
 
@@ -20,6 +22,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/payment-callback" element={<PaymentCallback />} />
+          <Route path="/voucher-history" element={<VoucherHistory />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -1,11 +1,11 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import SplashScreen from "@/components/SplashScreen";
 import WelcomeScreen from "@/components/WelcomeScreen";
 import BuyScreen from "@/components/BuyScreen";
 import ConfirmationScreen from "@/components/ConfirmationScreen";
-import VoucherHistory from "@/components/VoucherHistory";
 
-type Screen = "splash" | "welcome" | "buy" | "confirmation" | "history";
+type Screen = "splash" | "welcome" | "buy" | "confirmation";
 
 interface PurchaseData {
   days: number;
@@ -15,6 +15,7 @@ interface PurchaseData {
 }
 
 const Index = () => {
+  const navigate = useNavigate();
   const [currentScreen, setCurrentScreen] = useState<Screen>("splash");
   const [purchaseData, setPurchaseData] = useState<PurchaseData>({
     days: 1,
@@ -32,7 +33,8 @@ const Index = () => {
   };
 
   const handleHistoryClick = () => {
-    setCurrentScreen("history");
+    console.log('Navigating to voucher history');
+    navigate('/voucher-history');
   };
 
   const handleBack = () => {
@@ -42,9 +44,11 @@ const Index = () => {
   const handleConfirm = (
     days: number,
     total: number,
-    voucherCode: string,
-    securityPin: string
+    voucherCode: string
   ) => {
+    // Generate security pin (same as voucher code for simplicity)
+    const securityPin = voucherCode;
+    
     setPurchaseData({ days, total, voucherCode, securityPin });
 
     // TODO: Save to Supabase database
@@ -82,12 +86,10 @@ const Index = () => {
           days={purchaseData.days}
           total={purchaseData.total}
           voucherCode={purchaseData.voucherCode}
-          securityPin={purchaseData.securityPin}  // ✅ added this line only
+          securityPin={purchaseData.securityPin}
           onBackToHome={handleBackToHome}
         />
       )}
-
-      {currentScreen === "history" && <VoucherHistory onBack={handleBack} />}
     </>
   );
 };
