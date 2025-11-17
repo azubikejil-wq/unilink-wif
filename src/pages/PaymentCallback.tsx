@@ -1,11 +1,9 @@
-// Create this file: src/pages/PaymentCallback.tsx
+// src/pages/PaymentCallback.tsx - SECURE VERSION
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/lib/supabase";
-import { getDeviceId } from "@/lib/deviceId";
 
 const PaymentCallback = () => {
   const [searchParams] = useSearchParams();
@@ -14,41 +12,11 @@ const PaymentCallback = () => {
   const [status, setStatus] = useState<'verifying' | 'success' | 'failed'>('verifying');
   const [voucherData, setVoucherData] = useState<any>(null);
   const [copiedCode, setCopiedCode] = useState(false);
-  const hasVerified = useRef(false); // Prevent duplicate verification
-
-  const generateVoucherCode = () => {
-    // Generate exactly 8 character code: 3 letters + 5 numbers
-    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // Excluding I, O for clarity
-    const numbers = '0123456789';
-    
-    let code = '';
-    // 3 random letters
-    for (let i = 0; i < 3; i++) {
-      code += letters.charAt(Math.floor(Math.random() * letters.length));
-    }
-    // 5 random numbers
-    for (let i = 0; i < 5; i++) {
-      code += numbers.charAt(Math.floor(Math.random() * numbers.length));
-    }
-    
-    return code;
-  };
-
-  const getDeviceFingerprint = () => {
-    const nav = window.navigator;
-    const screen = window.screen;
-    const fingerprint = {
-      userAgent: nav.userAgent,
-      language: nav.language,
-      platform: nav.platform,
-      screenResolution: `${screen.width}x${screen.height}`,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      timestamp: Date.now(),
-    };
-    return btoa(JSON.stringify(fingerprint));
-  };
+  const hasVerified = useRef(false);
 
   const handleCopyCode = async () => {
+    if (!voucherData?.voucherCode) return;
+
     try {
       await navigator.clipboard.writeText(voucherData.voucherCode);
       setCopiedCode(true);
@@ -67,124 +35,89 @@ const PaymentCallback = () => {
   };
 
   useEffect(() => {
+    // Prevent duplicate verification
+    if (hasVerified.current) return;
+    hasVerified.current = true;
+
     const verifyPayment = async () => {
       try {
         // Get transaction details from URL params
         const transactionId = searchParams.get('transaction_id');
         const txRef = searchParams.get('tx_ref');
-        const status = searchParams.get('status');
+        const urlStatus = searchParams.get('status');
 
-        console.log('Payment callback params:', { transactionId, txRef, status });
+        if (import.meta.env.DEV) {
+          console.log('Payment callback params:', { transactionId, txRef, urlStatus });
+        }
 
-        if (!transactionId || !txRef) {
+        // Validate required parameters
+        if (!transactionId) {
           setStatus('failed');
           toast({
             title: "Invalid Payment",
-            description: "Missing payment information",
+            description: "Missing transaction information",
             variant: "destructive",
           });
           return;
         }
 
-        // Call edge function to verify payment with Flutterwave
+        // Quick fail for cancelled payments
+        if (urlStatus === 'cancelled') {
+          setStatus('failed');
+          toast({
+            title: "Payment Cancelled",
+            description: "You cancelled the payment",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Call server-side verification (which also creates voucher)
         const response = await fetch(
-          `https://sfhajdcuhhoaxtluohba.supabase.co/functions/v1/verify-payment`,
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-payment`,
           {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNmaGFqZGN1aGhvYXh0bHVvaGJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NjQ5MDQsImV4cCI6MjA3NzQ0MDkwNH0.R24eALOYv7BztKSPVYBohpFe8gVaN1pSCUGFD9rdS0w`,
+              'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
             },
-            body: JSON.stringify({ transaction_id: transactionId }),
+            body: JSON.stringify({ 
+              transaction_id: transactionId 
+            }),
           }
         );
 
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
         const result = await response.json();
-        console.log('Verification result:', result);
 
-        if (result.status === 'success' && result.data?.status === 'successful') {
-          // Payment verified successfully
-          const paymentData = result.data;
+        if (import.meta.env.DEV) {
+          console.log('Verification result:', result);
+        }
+
+        // Check if payment was successful
+        if (result.status === 'success' && result.voucher) {
+          const voucher = result.voucher;
           
-          // Get device ID
-          const deviceId = await getDeviceId();
-          console.log('💾 Saving voucher with device ID:', deviceId);
-
-          // Check if voucher already exists for this transaction
-          const { data: existingVoucher, error: checkError } = await supabase
-            .from('transactions')
-            .select('*')
-            .eq('transaction_ref', transactionId)
-            .maybeSingle();
-
-          if (checkError && checkError.code !== 'PGRST116') {
-            // PGRST116 is "no rows returned" which is fine
-            console.error('❌ Error checking existing voucher:', checkError);
-            throw new Error('Failed to check existing voucher');
-          }
-
-          let savedVoucher;
-
-          if (existingVoucher) {
-            console.log('✅ Voucher already exists for this transaction:', existingVoucher);
-            savedVoucher = existingVoucher;
-          } else {
-            // Generate voucher code (same as password for simplicity)
-            const voucherCode = generateVoucherCode();
-            const deviceFingerprint = getDeviceFingerprint();
-
-            // Extract customer info from payment metadata or customer object
-            const customerName = paymentData.customer?.name || paymentData.meta?.name || 'Customer';
-            const customerPhone = paymentData.customer?.phone_number || paymentData.meta?.phone || '';
-            const customerEmail = paymentData.customer?.email || null;
-            const days = parseInt(paymentData.meta?.days || '1');
-            const amount = parseFloat(paymentData.amount);
-
-            // Save to Supabase
-            const createdAt = new Date().toISOString();
-            const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-
-            // Insert new voucher
-            const { data, error } = await supabase.from('transactions').insert({
-              voucher_code: voucherCode,
-              customer_name: customerName,
-              phone: customerPhone,
-              email: customerEmail,
-              duration_days: days,
-              amount: amount,
-              transaction_ref: transactionId,
-              security_pin: voucherCode, // Use same code as password
-              device_fingerprint: deviceFingerprint,
-              purchase_device_id: deviceId,
-              created_at: createdAt,
-              expires_at: expiresAt,
-              status: 'active',
-              is_used: false,
-              usage_attempts: 0,
-            }).select().single();
-
-            if (error) {
-              console.error('❌ Supabase error:', error);
-              throw new Error('Failed to save voucher');
-            }
-
-            console.log('✅ Voucher saved successfully:', data);
-            savedVoucher = data;
-          }
-
           // Set success state with voucher data
           setVoucherData({
-            voucherCode: savedVoucher.voucher_code,
-            days: savedVoucher.duration_days,
-            amount: savedVoucher.amount,
-            customerName: savedVoucher.customer_name,
-            customerPhone: savedVoucher.phone,
+            voucherCode: voucher.voucher_code,
+            days: voucher.duration_days,
+            amount: voucher.amount,
+            customerName: voucher.customer_name,
+            customerPhone: voucher.phone,
+            alreadyExisted: result.data?.already_exists || false,
           });
+          
           setStatus('success');
 
           toast({
             title: "Payment Successful!",
-            description: "Your voucher has been generated",
+            description: voucher.already_exists 
+              ? "Your voucher is ready (already generated)"
+              : "Your voucher has been generated",
           });
 
         } else {
@@ -230,12 +163,22 @@ const PaymentCallback = () => {
           <div className="space-y-2">
             <h2 className="text-3xl font-bold">Payment Failed</h2>
             <p className="text-muted-foreground">
-              We couldn't verify your payment. If money was deducted, please contact support.
+              We couldn't verify your payment. If money was deducted, please contact support with your transaction reference.
             </p>
           </div>
-          <Button onClick={() => navigate('/')} className="w-full">
-            Back to Home
-          </Button>
+          <div className="space-y-3">
+            <Button onClick={() => navigate('/')} className="w-full" size="lg">
+              Try Again
+            </Button>
+            <Button 
+              onClick={() => navigate('/voucher-history')} 
+              variant="outline" 
+              className="w-full"
+              size="lg"
+            >
+              Check My Vouchers
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -253,7 +196,7 @@ const PaymentCallback = () => {
             </div>
           </div>
           <h2 className="text-3xl font-bold mb-2">Payment Successful!</h2>
-          <p className="text-muted-foreground">Your WiFi voucher is ready</p>
+          <p className="text-muted-foreground">Your WiFi voucher is ready to use</p>
         </div>
 
         {/* Voucher Code */}
@@ -292,12 +235,12 @@ const PaymentCallback = () => {
             <ol className="list-decimal list-inside space-y-2 text-sm text-blue-900 dark:text-blue-100">
               <li>Connect to <strong>UniLink WiFi</strong></li>
               <li>Login page will open automatically</li>
-              <li>Enter your voucher code: <strong className="font-mono">{voucherData?.voucherCode}</strong></li>
+              <li>Enter voucher code: <strong className="font-mono">{voucherData?.voucherCode}</strong></li>
               <li>Click Connect and enjoy!</li>
             </ol>
             <div className="mt-3 pt-3 border-t border-blue-500/20">
               <p className="text-xs text-blue-800 dark:text-blue-200">
-                🔒 <strong>Auto-Protection:</strong> This voucher will automatically lock to your device when you first connect. No one else can use it, even with the code!
+                🔒 <strong>Auto-Protection:</strong> This voucher will automatically lock to your device on first connection. No one else can use it!
               </p>
             </div>
           </div>
@@ -317,15 +260,31 @@ const PaymentCallback = () => {
             <span className="text-muted-foreground">Device Lock</span>
             <span className="font-semibold text-green-600">Enabled ✓</span>
           </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Timer Starts</span>
+            <span className="font-semibold">On First Connection</span>
+          </div>
         </div>
 
-        <Button onClick={() => navigate('/')} size="lg" variant="outline" className="w-full h-12">
-          Back to Home
-        </Button>
-        
-        <Button onClick={() => navigate('/voucher-history')} size="lg" className="w-full h-12">
-          View My Vouchers
-        </Button>
+        {/* Action Buttons */}
+        <div className="space-y-3">
+          <Button 
+            onClick={() => navigate('/voucher-history')} 
+            size="lg" 
+            className="w-full h-12"
+          >
+            View My Vouchers
+          </Button>
+          
+          <Button 
+            onClick={() => navigate('/')} 
+            size="lg" 
+            variant="outline" 
+            className="w-full h-12"
+          >
+            Back to Home
+          </Button>
+        </div>
       </div>
     </div>
   );

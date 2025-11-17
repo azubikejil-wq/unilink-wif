@@ -1,69 +1,51 @@
-import { useState, useEffect } from "react";
+// src/pages/BuyScreen.tsx - SECURE VERSION
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, Wifi, Calendar, DollarSign, Shield } from "lucide-react";
+import { ArrowLeft, Wifi, Calendar, DollarSign } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/lib/supabase";
 import { getDeviceId } from "@/lib/deviceId";
 
 interface BuyScreenProps {
   onBack: () => void;
-  onConfirm: (
-    days: number,
-    total: number,
-    voucherCode: string
-  ) => void;
 }
 
-const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
+const BuyScreen = ({ onBack }: BuyScreenProps) => {
   const [days, setDays] = useState(1);
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [lastAttempt, setLastAttempt] = useState(0);
   const { toast } = useToast();
 
   const pricePerDay = 500;
   const total = days * pricePerDay;
 
-  const generateVoucherCode = () => {
-    // Generate exactly 8 character code: 3 letters + 5 numbers
-    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // Excluding I, O for clarity
-    const numbers = '0123456789';
-    
-    let code = '';
-    // 3 random letters
-    for (let i = 0; i < 3; i++) {
-      code += letters.charAt(Math.floor(Math.random() * letters.length));
-    }
-    // 5 random numbers
-    for (let i = 0; i < 5; i++) {
-      code += numbers.charAt(Math.floor(Math.random() * numbers.length));
-    }
-    
-    return code;
-  };
-
-  const getDeviceFingerprint = () => {
-    const nav = window.navigator;
-    const screen = window.screen;
-    const fingerprint = {
-      userAgent: nav.userAgent,
-      language: nav.language,
-      platform: nav.platform,
-      screenResolution: `${screen.width}x${screen.height}`,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      timestamp: Date.now(),
-    };
-    return btoa(JSON.stringify(fingerprint));
+  // Input sanitization
+  const sanitizeInput = (input: string): string => {
+    return input
+      .trim()
+      .replace(/[<>'"]/g, '') // Remove potential XSS characters
+      .substring(0, 100); // Limit length
   };
 
   const handleBuy = async () => {
-    console.log("Starting payment process...");
+    // Rate limiting - prevent spam clicks
+    const now = Date.now();
+    if (now - lastAttempt < 3000) {
+      toast({
+        title: "Please Wait",
+        description: "Please wait a moment before trying again",
+        variant: "destructive",
+      });
+      return;
+    }
+    setLastAttempt(now);
 
     // Validate inputs
-    if (!phone || !name) {
+    if (!phone.trim() || !name.trim()) {
       toast({
         title: "Missing Information",
         description: "Please fill in your name and phone number",
@@ -72,19 +54,19 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
       return;
     }
 
-    if (days < 1) {
+    if (days < 1 || days > 365) {
       toast({
         title: "Invalid Duration",
-        description: "Please select at least 1 day",
+        description: "Please select between 1 and 365 days",
         variant: "destructive",
       });
       return;
     }
 
     // Email validation (only if provided)
-    if (email) {
+    if (email.trim()) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) {
+      if (!emailRegex.test(email.trim())) {
         toast({
           title: "Invalid Email",
           description: "Please enter a valid email address or leave it empty",
@@ -95,11 +77,12 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
     }
 
     // Phone validation (Nigerian format)
-    const phoneRegex = /^(\+234|0)[789]\d{9}$/;
-    if (!phoneRegex.test(phone)) {
+    const phoneRegex = /^(\+?234|0)[789]\d{9}$/;
+    const cleanPhone = phone.trim().replace(/\s+/g, '');
+    if (!phoneRegex.test(cleanPhone)) {
       toast({
         title: "Invalid Phone Number",
-        description: "Please enter a valid Nigerian phone number",
+        description: "Please enter a valid Nigerian phone number (e.g., 08012345678)",
         variant: "destructive",
       });
       return;
@@ -108,47 +91,59 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
     setIsProcessing(true);
 
     try {
-      console.log("Sending request to initiate-payment...");
+      // Get device ID
+      const deviceId = await getDeviceId();
+      
+      // Sanitize inputs
+      const sanitizedName = sanitizeInput(name);
+      const sanitizedEmail = email.trim() ? sanitizeInput(email) : '';
+      const sanitizedPhone = cleanPhone;
+
+      if (import.meta.env.DEV) {
+        console.log("Starting payment process...", {
+          name: sanitizedName,
+          phone: sanitizedPhone,
+          days,
+          amount: total,
+          deviceId,
+        });
+      }
       
       const response = await fetch(
-        "https://sfhajdcuhhoaxtluohba.supabase.co/functions/v1/initiate-payment",
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/initiate-payment`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNmaGFqZGN1aGhvYXh0bHVvaGJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NjQ5MDQsImV4cCI6MjA3NzQ0MDkwNH0.R24eALOYv7BztKSPVYBohpFe8gVaN1pSCUGFD9rdS0w`,
+            "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
           },
           body: JSON.stringify({
-            name,
-            email: email || `${phone}@unilink.ng`, // Provide default email
-            phone,
+            name: sanitizedName,
+            email: sanitizedEmail || null,
+            phone: sanitizedPhone,
             amount: total,
             days,
+            device_id: deviceId,
           }),
         }
       );
 
-      console.log("Response status:", response.status);
-      
       if (!response.ok) {
         const errorText = await response.text();
         console.error("Response error:", errorText);
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
+        throw new Error(`HTTP ${response.status}`);
       }
 
       const data = await response.json();
-      console.log("Payment API Response:", data);
 
       if (data.status === "success" && data.data?.link) {
-        console.log("Redirecting to Flutterwave link:", data.data.link);
-        
         // Redirect to Flutterwave
         window.location.href = data.data.link;
       } else {
         console.error("Payment error:", data);
         toast({
           title: "Error Starting Payment",
-          description: data.message || data.error || "Something went wrong. Please try again.",
+          description: data.message || "Something went wrong. Please try again.",
           variant: "destructive",
         });
         setIsProcessing(false);
@@ -157,7 +152,7 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
       console.error("Network error:", error);
       toast({
         title: "Network Error",
-        description: error instanceof Error ? error.message : "Unable to connect to payment server.",
+        description: "Unable to connect to payment server. Please check your connection.",
         variant: "destructive",
       });
       setIsProcessing(false);
@@ -210,6 +205,7 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
                 className="h-12"
                 disabled={isProcessing}
                 required
+                maxLength={100}
               />
             </div>
 
@@ -226,6 +222,7 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
                 className="h-12"
                 disabled={isProcessing}
                 required
+                maxLength={15}
               />
               <p className="text-xs text-muted-foreground">Format: 080XXXXXXXX or +234XXXXXXXXXX</p>
             </div>
@@ -242,6 +239,7 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
                 onChange={(e) => setEmail(e.target.value)}
                 className="h-12"
                 disabled={isProcessing}
+                maxLength={100}
               />
             </div>
           </div>
@@ -258,8 +256,12 @@ const BuyScreen = ({ onBack, onConfirm }: BuyScreenProps) => {
                   id="days"
                   type="number"
                   min="1"
+                  max="365"
                   value={days}
-                  onChange={(e) => setDays(Math.max(1, parseInt(e.target.value) || 1))}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value) || 1;
+                    setDays(Math.max(1, Math.min(365, value)));
+                  }}
                   className="pl-11 h-14 text-lg"
                   disabled={isProcessing}
                 />
