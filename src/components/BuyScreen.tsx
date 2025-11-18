@@ -1,4 +1,4 @@
-// src/pages/BuyScreen.tsx - SECURE VERSION
+// src/pages/BuyScreen.tsx - FIXED VERSION (Sends Device ID)
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,12 +27,12 @@ const BuyScreen = ({ onBack }: BuyScreenProps) => {
   const sanitizeInput = (input: string): string => {
     return input
       .trim()
-      .replace(/[<>'"]/g, '') // Remove potential XSS characters
-      .substring(0, 100); // Limit length
+      .replace(/[<>'"]/g, '')
+      .substring(0, 100);
   };
 
   const handleBuy = async () => {
-    // Rate limiting - prevent spam clicks
+    // Rate limiting
     const now = Date.now();
     if (now - lastAttempt < 3000) {
       toast({
@@ -91,23 +91,17 @@ const BuyScreen = ({ onBack }: BuyScreenProps) => {
     setIsProcessing(true);
 
     try {
-      // Get device ID
+      // CRITICAL: Get device ID BEFORE payment
+      console.log("🔍 Getting device ID...");
       const deviceId = await getDeviceId();
+      console.log("✅ Device ID:", deviceId);
       
       // Sanitize inputs
       const sanitizedName = sanitizeInput(name);
       const sanitizedEmail = email.trim() ? sanitizeInput(email) : '';
       const sanitizedPhone = cleanPhone;
 
-      if (import.meta.env.DEV) {
-        console.log("Starting payment process...", {
-          name: sanitizedName,
-          phone: sanitizedPhone,
-          days,
-          amount: total,
-          deviceId,
-        });
-      }
+      console.log("📤 Sending payment request with device_id:", deviceId);
       
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/initiate-payment`,
@@ -123,24 +117,28 @@ const BuyScreen = ({ onBack }: BuyScreenProps) => {
             phone: sanitizedPhone,
             amount: total,
             days,
-            device_id: deviceId,
+            device_id: deviceId, // CRITICAL: Send device_id
           }),
         }
       );
 
+      console.log("📨 Response status:", response.status);
+
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("Response error:", errorText);
+        console.error("❌ Response error:", errorText);
         throw new Error(`HTTP ${response.status}`);
       }
 
       const data = await response.json();
+      console.log("✅ Payment API Response:", data);
 
       if (data.status === "success" && data.data?.link) {
+        console.log("🔗 Redirecting to Flutterwave:", data.data.link);
         // Redirect to Flutterwave
         window.location.href = data.data.link;
       } else {
-        console.error("Payment error:", data);
+        console.error("❌ Payment error:", data);
         toast({
           title: "Error Starting Payment",
           description: data.message || "Something went wrong. Please try again.",
@@ -149,7 +147,7 @@ const BuyScreen = ({ onBack }: BuyScreenProps) => {
         setIsProcessing(false);
       }
     } catch (error) {
-      console.error("Network error:", error);
+      console.error("💥 Network error:", error);
       toast({
         title: "Network Error",
         description: "Unable to connect to payment server. Please check your connection.",

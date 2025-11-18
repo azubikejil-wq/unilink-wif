@@ -1,4 +1,6 @@
-// src/pages/PaymentCallback.tsx - SECURE VERSION
+// src/pages/PaymentCallback.tsx - FINAL FIXED VERSION
+// Handles React 18 double-render + better error handling
+
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
@@ -12,7 +14,7 @@ const PaymentCallback = () => {
   const [status, setStatus] = useState<'verifying' | 'success' | 'failed'>('verifying');
   const [voucherData, setVoucherData] = useState<any>(null);
   const [copiedCode, setCopiedCode] = useState(false);
-  const hasVerified = useRef(false);
+  const verificationPromise = useRef<Promise<void> | null>(null);
 
   const handleCopyCode = async () => {
     if (!voucherData?.voucherCode) return;
@@ -35,23 +37,24 @@ const PaymentCallback = () => {
   };
 
   useEffect(() => {
-    // Prevent duplicate verification
-    if (hasVerified.current) return;
-    hasVerified.current = true;
+    // If verification is already in progress, wait for it
+    if (verificationPromise.current) {
+      console.log("⚠️ Verification already in progress, waiting...");
+      return;
+    }
 
     const verifyPayment = async () => {
       try {
-        // Get transaction details from URL params
+        console.log("🚀 Starting payment verification");
+        
         const transactionId = searchParams.get('transaction_id');
         const txRef = searchParams.get('tx_ref');
         const urlStatus = searchParams.get('status');
 
-        if (import.meta.env.DEV) {
-          console.log('Payment callback params:', { transactionId, txRef, urlStatus });
-        }
+        console.log(`📋 Transaction: ${transactionId}, Status: ${urlStatus}`);
 
-        // Validate required parameters
         if (!transactionId) {
+          console.error('❌ Missing transaction_id');
           setStatus('failed');
           toast({
             title: "Invalid Payment",
@@ -61,8 +64,8 @@ const PaymentCallback = () => {
           return;
         }
 
-        // Quick fail for cancelled payments
         if (urlStatus === 'cancelled') {
+          console.log('⚠️ Payment was cancelled');
           setStatus('failed');
           toast({
             title: "Payment Cancelled",
@@ -72,65 +75,112 @@ const PaymentCallback = () => {
           return;
         }
 
-        // Call server-side verification (which also creates voucher)
-        const response = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/verify-payment`,
-          {
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+        const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+        if (!supabaseUrl || !supabaseKey) {
+          console.error('❌ Missing environment variables');
+          setStatus('failed');
+          toast({
+            title: "Configuration Error",
+            description: "Please check your .env file and restart the dev server",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const apiUrl = `${supabaseUrl}/functions/v1/verify-payment`;
+        console.log(`📡 API URL: ${apiUrl}`);
+
+        // Timeout after 45 seconds
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          console.error('⏰ Request timeout after 45s');
+          controller.abort();
+        }, 45000);
+
+        try {
+          console.log('📤 Sending POST request...');
+          
+          const response = await fetch(apiUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+              'Authorization': `Bearer ${supabaseKey}`,
             },
-            body: JSON.stringify({ 
-              transaction_id: transactionId 
-            }),
+            body: JSON.stringify({ transaction_id: transactionId }),
+            signal: controller.signal,
+          });
+
+          clearTimeout(timeoutId);
+          
+          console.log(`📨 Response: ${response.status} ${response.statusText}`);
+
+          // Read response body
+          let result: any;
+          const contentType = response.headers.get('content-type');
+          
+          if (contentType?.includes('application/json')) {
+            result = await response.json();
+            console.log('✅ JSON response:', result);
+          } else {
+            const text = await response.text();
+            console.error('❌ Non-JSON response:', text.substring(0, 200));
+            throw new Error('Server returned invalid response format');
           }
-        );
 
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
+          // Handle success
+          if (response.ok && result.status === 'success' && result.voucher) {
+            console.log('✅ Payment verified successfully');
+            
+            const voucher = result.voucher;
+            setVoucherData({
+              voucherCode: voucher.voucher_code,
+              days: voucher.duration_days,
+              amount: voucher.amount,
+              customerName: voucher.customer_name,
+              customerPhone: voucher.phone,
+              alreadyExisted: result.data?.already_exists || false,
+            });
+            
+            setStatus('success');
+            
+            toast({
+              title: "Payment Successful!",
+              description: result.data?.already_exists 
+                ? "Voucher already created"
+                : "Voucher created successfully",
+            });
+            return;
+          }
 
-        const result = await response.json();
-
-        if (import.meta.env.DEV) {
-          console.log('Verification result:', result);
-        }
-
-        // Check if payment was successful
-        if (result.status === 'success' && result.voucher) {
-          const voucher = result.voucher;
-          
-          // Set success state with voucher data
-          setVoucherData({
-            voucherCode: voucher.voucher_code,
-            days: voucher.duration_days,
-            amount: voucher.amount,
-            customerName: voucher.customer_name,
-            customerPhone: voucher.phone,
-            alreadyExisted: result.data?.already_exists || false,
-          });
-          
-          setStatus('success');
-
-          toast({
-            title: "Payment Successful!",
-            description: voucher.already_exists 
-              ? "Your voucher is ready (already generated)"
-              : "Your voucher has been generated",
-          });
-
-        } else {
-          // Payment verification failed
+          // Handle errors
+          console.error('❌ Verification failed:', result);
           setStatus('failed');
           toast({
-            title: "Payment Verification Failed",
-            description: result.message || "Unable to verify payment",
+            title: "Verification Failed",
+            description: result.message || result.error || "Unable to verify payment",
             variant: "destructive",
           });
+
+        } catch (fetchError) {
+          clearTimeout(timeoutId);
+          
+          if (fetchError.name === 'AbortError') {
+            console.error('💥 Request timed out');
+            setStatus('failed');
+            toast({
+              title: "Request Timeout",
+              description: "Verification is taking too long. Check your voucher history.",
+              variant: "destructive",
+            });
+          } else {
+            throw fetchError;
+          }
         }
+
       } catch (error) {
-        console.error('Verification error:', error);
+        console.error('💥 Verification error:', error);
         setStatus('failed');
         toast({
           title: "Error",
@@ -140,7 +190,13 @@ const PaymentCallback = () => {
       }
     };
 
-    verifyPayment();
+    // Store the promise to prevent duplicate calls
+    verificationPromise.current = verifyPayment();
+    
+    return () => {
+      // Cleanup
+      verificationPromise.current = null;
+    };
   }, [searchParams, toast]);
 
   if (status === 'verifying') {
@@ -150,6 +206,20 @@ const PaymentCallback = () => {
           <Loader2 className="h-16 w-16 animate-spin text-primary mx-auto" />
           <h2 className="text-2xl font-bold">Verifying Payment...</h2>
           <p className="text-muted-foreground">Please wait while we confirm your payment</p>
+          <p className="text-xs text-muted-foreground mt-4">
+            This usually takes 5-10 seconds
+          </p>
+          
+          {/* Emergency button after 15 seconds */}
+          <div className="mt-6">
+            <Button 
+              onClick={() => navigate('/voucher-history')} 
+              variant="outline"
+              size="sm"
+            >
+              Taking too long? Check Voucher History
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -161,22 +231,26 @@ const PaymentCallback = () => {
         <div className="max-w-md w-full text-center space-y-6">
           <XCircle className="h-24 w-24 text-destructive mx-auto" />
           <div className="space-y-2">
-            <h2 className="text-3xl font-bold">Payment Failed</h2>
+            <h2 className="text-3xl font-bold">Verification Issue</h2>
             <p className="text-muted-foreground">
-              We couldn't verify your payment. If money was deducted, please contact support with your transaction reference.
+              We couldn't verify your payment automatically. If money was deducted, your voucher may already be created.
             </p>
           </div>
           <div className="space-y-3">
-            <Button onClick={() => navigate('/')} className="w-full" size="lg">
-              Try Again
-            </Button>
             <Button 
               onClick={() => navigate('/voucher-history')} 
-              variant="outline" 
               className="w-full"
               size="lg"
             >
               Check My Vouchers
+            </Button>
+            <Button 
+              onClick={() => navigate('/')} 
+              variant="outline" 
+              className="w-full"
+              size="lg"
+            >
+              Back to Home
             </Button>
           </div>
         </div>
@@ -184,7 +258,7 @@ const PaymentCallback = () => {
     );
   }
 
-  // Success state - show voucher
+  // Success state
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-6">
       <div className="max-w-md w-full space-y-8">
@@ -197,6 +271,11 @@ const PaymentCallback = () => {
           </div>
           <h2 className="text-3xl font-bold mb-2">Payment Successful!</h2>
           <p className="text-muted-foreground">Your WiFi voucher is ready to use</p>
+          {voucherData?.alreadyExisted && (
+            <p className="text-sm text-amber-600 mt-2">
+              (This voucher was already created for this payment)
+            </p>
+          )}
         </div>
 
         {/* Voucher Code */}
@@ -233,14 +312,14 @@ const PaymentCallback = () => {
               <span className="text-xl">📱</span> How to Connect:
             </p>
             <ol className="list-decimal list-inside space-y-2 text-sm text-blue-900 dark:text-blue-100">
-              <li>Connect to <strong>UniLink WiFi</strong></li>
+              <li>Connect to <strong>JAHANA NETWORK</strong></li>
               <li>Login page will open automatically</li>
               <li>Enter voucher code: <strong className="font-mono">{voucherData?.voucherCode}</strong></li>
               <li>Click Connect and enjoy!</li>
             </ol>
             <div className="mt-3 pt-3 border-t border-blue-500/20">
               <p className="text-xs text-blue-800 dark:text-blue-200">
-                🔒 <strong>Auto-Protection:</strong> This voucher will automatically lock to your device on first connection. No one else can use it!
+                🔒 <strong>Auto-Protection:</strong> This voucher will automatically lock to your device on first connection.
               </p>
             </div>
           </div>
