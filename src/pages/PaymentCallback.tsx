@@ -1,7 +1,7 @@
-// src/pages/PaymentCallback.tsx - FINAL FIXED VERSION
-// Handles React 18 double-render + better error handling
+// src/pages/PaymentCallback.tsx - PRODUCTION READY
+// Fixes infinite loading in production (Vercel)
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, CheckCircle2, XCircle, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,6 @@ const PaymentCallback = () => {
   const [status, setStatus] = useState<'verifying' | 'success' | 'failed'>('verifying');
   const [voucherData, setVoucherData] = useState<any>(null);
   const [copiedCode, setCopiedCode] = useState(false);
-  const verificationPromise = useRef<Promise<void> | null>(null);
 
   const handleCopyCode = async () => {
     if (!voucherData?.voucherCode) return;
@@ -37,72 +36,65 @@ const PaymentCallback = () => {
   };
 
   useEffect(() => {
-    // If verification is already in progress, wait for it
-    if (verificationPromise.current) {
-      console.log("⚠️ Verification already in progress, waiting...");
-      return;
-    }
+    let isMounted = true; // Track if component is still mounted
 
     const verifyPayment = async () => {
       try {
-        console.log("🚀 Starting payment verification");
-        
         const transactionId = searchParams.get('transaction_id');
-        const txRef = searchParams.get('tx_ref');
         const urlStatus = searchParams.get('status');
 
-        console.log(`📋 Transaction: ${transactionId}, Status: ${urlStatus}`);
+        console.log('🚀 Verifying payment:', transactionId);
 
+        // Validate transaction ID
         if (!transactionId) {
-          console.error('❌ Missing transaction_id');
-          setStatus('failed');
-          toast({
-            title: "Invalid Payment",
-            description: "Missing transaction information",
-            variant: "destructive",
-          });
+          if (isMounted) {
+            setStatus('failed');
+            toast({
+              title: "Invalid Payment",
+              description: "Missing transaction information",
+              variant: "destructive",
+            });
+          }
           return;
         }
 
+        // Handle cancelled payments
         if (urlStatus === 'cancelled') {
-          console.log('⚠️ Payment was cancelled');
-          setStatus('failed');
-          toast({
-            title: "Payment Cancelled",
-            description: "You cancelled the payment",
-            variant: "destructive",
-          });
+          if (isMounted) {
+            setStatus('failed');
+            toast({
+              title: "Payment Cancelled",
+              description: "You cancelled the payment",
+              variant: "destructive",
+            });
+          }
           return;
         }
 
+        // Get environment variables
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
         if (!supabaseUrl || !supabaseKey) {
           console.error('❌ Missing environment variables');
-          setStatus('failed');
-          toast({
-            title: "Configuration Error",
-            description: "Please check your .env file and restart the dev server",
-            variant: "destructive",
-          });
+          if (isMounted) {
+            setStatus('failed');
+            toast({
+              title: "Configuration Error",
+              description: "Missing API configuration",
+              variant: "destructive",
+            });
+          }
           return;
         }
 
-        const apiUrl = `${supabaseUrl}/functions/v1/verify-payment`;
-        console.log(`📡 API URL: ${apiUrl}`);
-
-        // Timeout after 45 seconds
+        // Call verification API with timeout
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => {
-          console.error('⏰ Request timeout after 45s');
-          controller.abort();
-        }, 45000);
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
-        try {
-          console.log('📤 Sending POST request...');
-          
-          const response = await fetch(apiUrl, {
+        const response = await fetch(
+          `${supabaseUrl}/functions/v1/verify-payment`,
+          {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -110,51 +102,52 @@ const PaymentCallback = () => {
             },
             body: JSON.stringify({ transaction_id: transactionId }),
             signal: controller.signal,
+          }
+        );
+
+        clearTimeout(timeoutId);
+
+        // Check if component is still mounted before updating state
+        if (!isMounted) {
+          console.log('⚠️ Component unmounted, skipping state update');
+          return;
+        }
+
+        console.log('📨 Response status:', response.status);
+
+        // Parse response
+        const result = await response.json();
+        console.log('📦 Response data:', result);
+
+        // Handle successful verification
+        if (response.ok && result.status === 'success' && result.voucher) {
+          const voucher = result.voucher;
+          
+          console.log('✅ Payment verified:', voucher.voucher_code);
+          
+          // Update state - CRITICAL: Do this synchronously
+          setVoucherData({
+            voucherCode: voucher.voucher_code,
+            days: voucher.duration_days,
+            amount: voucher.amount,
+            customerName: voucher.customer_name,
+            customerPhone: voucher.phone,
+            alreadyExisted: result.data?.already_exists || false,
           });
-
-          clearTimeout(timeoutId);
           
-          console.log(`📨 Response: ${response.status} ${response.statusText}`);
+          // IMPORTANT: Use setTimeout to ensure state update completes
+          setTimeout(() => {
+            if (isMounted) {
+              setStatus('success');
+              toast({
+                title: "Payment Successful!",
+                description: "Your voucher has been generated",
+              });
+            }
+          }, 100);
 
-          // Read response body
-          let result: any;
-          const contentType = response.headers.get('content-type');
-          
-          if (contentType?.includes('application/json')) {
-            result = await response.json();
-            console.log('✅ JSON response:', result);
-          } else {
-            const text = await response.text();
-            console.error('❌ Non-JSON response:', text.substring(0, 200));
-            throw new Error('Server returned invalid response format');
-          }
-
-          // Handle success
-          if (response.ok && result.status === 'success' && result.voucher) {
-            console.log('✅ Payment verified successfully');
-            
-            const voucher = result.voucher;
-            setVoucherData({
-              voucherCode: voucher.voucher_code,
-              days: voucher.duration_days,
-              amount: voucher.amount,
-              customerName: voucher.customer_name,
-              customerPhone: voucher.phone,
-              alreadyExisted: result.data?.already_exists || false,
-            });
-            
-            setStatus('success');
-            
-            toast({
-              title: "Payment Successful!",
-              description: result.data?.already_exists 
-                ? "Voucher already created"
-                : "Voucher created successfully",
-            });
-            return;
-          }
-
-          // Handle errors
+        } else {
+          // Handle verification failure
           console.error('❌ Verification failed:', result);
           setStatus('failed');
           toast({
@@ -162,55 +155,56 @@ const PaymentCallback = () => {
             description: result.message || result.error || "Unable to verify payment",
             variant: "destructive",
           });
-
-        } catch (fetchError) {
-          clearTimeout(timeoutId);
-          
-          if (fetchError.name === 'AbortError') {
-            console.error('💥 Request timed out');
-            setStatus('failed');
-            toast({
-              title: "Request Timeout",
-              description: "Verification is taking too long. Check your voucher history.",
-              variant: "destructive",
-            });
-          } else {
-            throw fetchError;
-          }
         }
 
       } catch (error) {
+        // Only update state if component is still mounted
+        if (!isMounted) return;
+
         console.error('💥 Verification error:', error);
-        setStatus('failed');
-        toast({
-          title: "Error",
-          description: error instanceof Error ? error.message : "Something went wrong",
-          variant: "destructive",
-        });
+
+        if (error.name === 'AbortError') {
+          setStatus('failed');
+          toast({
+            title: "Request Timeout",
+            description: "Verification took too long. Check your voucher history.",
+            variant: "destructive",
+          });
+        } else {
+          setStatus('failed');
+          toast({
+            title: "Error",
+            description: error instanceof Error ? error.message : "Something went wrong",
+            variant: "destructive",
+          });
+        }
       }
     };
 
-    // Store the promise to prevent duplicate calls
-    verificationPromise.current = verifyPayment();
-    
+    // Start verification
+    verifyPayment();
+
+    // Cleanup function
     return () => {
-      // Cleanup
-      verificationPromise.current = null;
+      isMounted = false;
+      console.log('🧹 Component unmounting');
     };
-  }, [searchParams, toast]);
+  }, [searchParams, toast, navigate]);
 
   if (status === 'verifying') {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
-        <div className="text-center space-y-4">
+        <div className="text-center space-y-4 max-w-md">
           <Loader2 className="h-16 w-16 animate-spin text-primary mx-auto" />
           <h2 className="text-2xl font-bold">Verifying Payment...</h2>
           <p className="text-muted-foreground">Please wait while we confirm your payment</p>
-          <p className="text-xs text-muted-foreground mt-4">
-            This usually takes 5-10 seconds
-          </p>
           
-          {/* Emergency button after 15 seconds */}
+          {/* Helpful tip */}
+          <div className="mt-6 p-4 bg-blue-500/10 rounded-lg text-sm text-blue-900 dark:text-blue-100">
+            <p>This usually takes 5-10 seconds</p>
+          </div>
+          
+          {/* Emergency button */}
           <div className="mt-6">
             <Button 
               onClick={() => navigate('/voucher-history')} 
@@ -233,7 +227,7 @@ const PaymentCallback = () => {
           <div className="space-y-2">
             <h2 className="text-3xl font-bold">Verification Issue</h2>
             <p className="text-muted-foreground">
-              We couldn't verify your payment automatically. If money was deducted, your voucher may already be created.
+              We couldn't verify your payment automatically. If money was deducted, your voucher may already be in your history.
             </p>
           </div>
           <div className="space-y-3">
@@ -250,7 +244,7 @@ const PaymentCallback = () => {
               className="w-full"
               size="lg"
             >
-              Back to Home
+              Try Again
             </Button>
           </div>
         </div>
